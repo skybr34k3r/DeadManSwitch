@@ -848,14 +848,14 @@ async def _message_handler(update: Any, context: Any):
                                     result = execute_shutdown_phase([target], parts[2], parts[2].upper())
                                     results["api"].extend(result)
                         
-                        # Build results message
-                        text = f"⚡ **SELECTIVE SHUTDOWN EXECUTED**\n\n"
+                        # Build results message (use HTML to avoid Markdown parsing issues)
+                        text = "⚡ <b>SELECTIVE SHUTDOWN EXECUTED</b>\n\n"
                         total_hosts = 0
                         success_count = 0
                         
                         for phase, hosts in results.items():
                             if hosts:
-                                text += f"**{phase.upper()}:**\n"
+                                text += f"<b>{phase.upper()}:</b>\n"
                                 for h in hosts:
                                     total_hosts += 1
                                     host_name = h.get("host", "unknown")
@@ -871,21 +871,29 @@ async def _message_handler(update: Any, context: Any):
                                     else:
                                         icon = "❌"
                                     
-                                    text += f"{icon} `{host_name}` - {status}\n"
+                                    # Escape HTML special chars
+                                    host_name_safe = host_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                                    status_safe = status.replace("_", " ")
+                                    text += f"{icon} <code>{host_name_safe}</code> - {status_safe}\n"
                                     if details and status not in ["shutdown_initiated", "executed"]:
-                                        text += f"   _{details[:50]}_\n"
+                                        details_safe = details[:50].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                                        text += f"   <i>{details_safe}</i>\n"
                                 text += "\n"
                         
-                        text += f"**Summary:** {success_count}/{total_hosts} hosts executed\n"
+                        text += f"<b>Summary:</b> {success_count}/{total_hosts} hosts executed\n"
                         
                         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
                         keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back")]]
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         
                         try:
-                            await status_msg.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
-                        except:
-                            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+                            await status_msg.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+                        except Exception as e:
+                            logger.error(f"Failed to edit selective shutdown message: {e}")
+                            try:
+                                await update.message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+                            except Exception as e2:
+                                logger.error(f"Failed to send selective shutdown message: {e2}")
                         
                         logger.critical(f"Selective shutdown triggered via Telegram by user {user_id}: {len(selected_hosts)} hosts")
                     
@@ -940,11 +948,13 @@ async def _message_handler(update: Any, context: Any):
                             await update.message.reply_text("❌ Host not found")
                 else:
                     await update.message.reply_text("❌ Invalid TOTP code")
-                    del _pending_operations[user_id]
+                    if user_id in _pending_operations:
+                        del _pending_operations[user_id]
                     logger.warning(f"Invalid TOTP from user {user_id}")
             except Exception as e:
                 await update.message.reply_text(f"❌ Error: {str(e)}")
-                del _pending_operations[user_id]
+                if user_id in _pending_operations:
+                    del _pending_operations[user_id]
         return
     
     # Remove host (SSH if has colon, API otherwise)
