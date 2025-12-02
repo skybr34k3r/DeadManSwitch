@@ -82,6 +82,7 @@ async def _show_main_menu(update: Any, authenticated: bool = False):
     if authenticated:
         keyboard = [
             [InlineKeyboardButton("📊 System Status", callback_data="status")],
+            [InlineKeyboardButton("📜 View Logs", callback_data="view_logs")],
             [InlineKeyboardButton("📋 List SSH Hosts", callback_data="list_ssh")],
             [InlineKeyboardButton("📋 List API Hosts", callback_data="list_api")],
             [InlineKeyboardButton("➕ Add SSH Host", callback_data="add_ssh")],
@@ -283,6 +284,72 @@ async def _button_callback(update: Any, context: Any):
             keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception as e:
+            await query.edit_message_text(f"❌ Error: {str(e)}")
+        return
+    
+    if data == "view_logs":
+        try:
+            from database import get_all_logs
+            logs = get_all_logs(limit=20)
+            
+            if not logs:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text("📜 No logs available.", reply_markup=reply_markup)
+                return
+            
+            text = "📜 <b>Recent Activity Logs</b>\n"
+            text += f"<i>Showing last {len(logs)} entries</i>\n\n"
+            
+            # Status icons
+            status_icons = {
+                "info": "ℹ️",
+                "warning": "⚠️",
+                "error": "❌",
+                "critical": "🚨",
+                "success": "✅"
+            }
+            
+            for log in logs:
+                timestamp = log.get("timestamp", "")
+                action = log.get("action", "unknown")
+                details = log.get("details", "")
+                source = log.get("source", "")
+                status = log.get("status", "info")
+                
+                icon = status_icons.get(status, "•")
+                
+                # Format timestamp (keep only time if today)
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(timestamp)
+                    time_str = dt.strftime("%H:%M:%S")
+                except:
+                    time_str = timestamp[:19] if len(timestamp) > 19 else timestamp
+                
+                # Escape HTML
+                action_safe = action.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                details_safe = details.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                source_safe = source.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                
+                text += f"{icon} <code>{time_str}</code>\n"
+                text += f"   <b>{action_safe}</b>"
+                if source_safe:
+                    text += f" <i>({source_safe})</i>"
+                text += "\n"
+                if details_safe:
+                    # Truncate long details
+                    if len(details_safe) > 60:
+                        details_safe = details_safe[:57] + "..."
+                    text += f"   {details_safe}\n"
+                text += "\n"
+            
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception as e:
             await query.edit_message_text(f"❌ Error: {str(e)}")
         return
