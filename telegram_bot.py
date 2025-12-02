@@ -815,7 +815,7 @@ async def _message_handler(update: Any, context: Any):
                         logger.critical(f"Shutdown triggered via Telegram by user {user_id}")
                     
                     elif operation == "selective_shutdown":
-                        selected_hosts = data.get("selected_hosts", [])
+                        selected_hosts = op.get("selected_hosts", [])
                         if not selected_hosts:
                             await update.message.reply_text("❌ No hosts selected")
                             return
