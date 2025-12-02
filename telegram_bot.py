@@ -88,7 +88,8 @@ async def _show_main_menu(update: Any, authenticated: bool = False):
             [InlineKeyboardButton("➕ Add API Host", callback_data="add_api")],
             [InlineKeyboardButton("🗑️ Remove SSH Host", callback_data="remove_ssh")],
             [InlineKeyboardButton("🗑️ Remove API Host", callback_data="remove_api")],
-            [InlineKeyboardButton("🔴 Emergency Shutdown", callback_data="shutdown")],
+            [InlineKeyboardButton("🔴 Emergency Shutdown (All)", callback_data="shutdown")],
+            [InlineKeyboardButton("⚡ Selective Shutdown", callback_data="selective_shutdown")],
             [InlineKeyboardButton("🔓 Logout", callback_data="logout")]
         ]
         text = "🛡️ Control Panel (Authenticated)\n\nSelect an operation:"
@@ -99,7 +100,11 @@ async def _show_main_menu(update: Any, authenticated: bool = False):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if hasattr(update, 'callback_query') and update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        try:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+        except Exception:
+            # Ignore "Message is not modified" errors when content is identical
+            pass
     else:
         await update.message.reply_text(text, reply_markup=reply_markup)
 
@@ -446,11 +451,67 @@ async def _button_callback(update: Any, context: Any):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            "🚨 EMERGENCY SHUTDOWN\n\n"
-            "⚠️ This will initiate infrastructure shutdown!\n\n"
+            "🚨 EMERGENCY SHUTDOWN (ALL HOSTS)\n\n"
+            "⚠️ This will shutdown ALL infrastructure!\n\n"
             "Send your TOTP code to confirm.",
             reply_markup=reply_markup
         )
+        return
+    
+    if data == "selective_shutdown":
+        try:
+            from database import get_all_ssh_hosts, get_all_api_hosts
+            ssh_hosts = get_all_ssh_hosts(enabled_only=True)
+            api_hosts = get_all_api_hosts(enabled_only=True)
+            
+            if not ssh_hosts and not api_hosts:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    "📋 No hosts available for shutdown.",
+                    reply_markup=reply_markup
+                )
+                return
+            
+            text = "⚡ **Selective Shutdown**\n\nChoose hosts to shutdown:\n\n"
+            text += "Send host identifiers (comma-separated):\n\n"
+            
+            host_list = []
+            if ssh_hosts:
+                text += "**SSH Hosts:**\n"
+                for idx, h in enumerate(ssh_hosts, 1):
+                    host_id = f"ssh:{h['host']}:{h['user']}"
+                    host_list.append(host_id)
+                    text += f"{idx}. `{h['user']}@{h['host']}`\n"
+                text += "\n"
+            
+            if api_hosts:
+                text += "**API Hosts:**\n"
+                offset = len(ssh_hosts)
+                for idx, h in enumerate(api_hosts, offset + 1):
+                    host_id = f"api:{h['host']}:{h['api_type']}"
+                    host_list.append(host_id)
+                    text += f"{idx}. `{h['host']}` ({h['api_type']})\n"
+                text += "\n"
+            
+            text += "\nExamples:\n"
+            text += "`1,3,5` to shutdown hosts 1, 3, and 5\n"
+            text += "`1-4` to shutdown hosts 1 through 4\n"
+            text += "`all` to shutdown all hosts\n"
+            
+            _pending_operations[user_id] = {
+                "operation": "selective_shutdown",
+                "state": "awaiting_selection",
+                "host_list": host_list
+            }
+            
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+        except Exception as e:
+            await query.edit_message_text(f"❌ Error: {str(e)}")
         return
 
 
@@ -520,6 +581,76 @@ async def _message_handler(update: Any, context: Any):
     if user_id in _pending_operations:
         op = _pending_operations[user_id]
         
+        if op.get("operation") == "selective_shutdown" and op.get("state") == "awaiting_selection":
+            try:
+                # Parse selection
+                selection = message_text.strip().lower()
+                host_list = op.get("host_list", [])
+                
+                if not host_list:
+                    await update.message.reply_text("❌ No hosts available")
+                    del _pending_operations[user_id]
+                    return
+                
+                selected_indices = []
+                if selection == "all":
+                    selected_indices = list(range(len(host_list)))
+                else:
+                    # Parse comma-separated and ranges
+                    for part in selection.split(","):
+                        part = part.strip()
+                        if "-" in part:
+                            try:
+                                start, end = part.split("-")
+                                start_idx = int(start.strip()) - 1
+                                end_idx = int(end.strip()) - 1
+                                selected_indices.extend(range(start_idx, end_idx + 1))
+                            except:
+                                pass
+                        else:
+                            try:
+                                selected_indices.append(int(part) - 1)
+                            except:
+                                pass
+                
+                # Validate and collect hosts
+                selected_hosts = []
+                for idx in selected_indices:
+                    if 0 <= idx < len(host_list):
+                        selected_hosts.append(host_list[idx])
+                
+                if not selected_hosts:
+                    await update.message.reply_text("❌ Invalid selection. Try again or send /start to cancel.")
+                    return
+                
+                # Show confirmation
+                try:
+                    await update.message.delete()
+                except:
+                    pass
+                
+                text = f"⚠️ **Confirm Selective Shutdown**\n\n"
+                text += f"**Selected {len(selected_hosts)} host(s):**\n"
+                for host_id in selected_hosts:
+                    parts = host_id.split(":", 2)
+                    if parts[0] == "ssh":
+                        text += f"• SSH: `{parts[2]}@{parts[1]}`\n"
+                    else:
+                        text += f"• API: `{parts[1]}` ({parts[2]})\n"
+                text += f"\nSend your TOTP code to confirm shutdown."
+                
+                _pending_operations[user_id] = {
+                    "operation": "selective_shutdown",
+                    "state": "awaiting_otp",
+                    "selected_hosts": selected_hosts
+                }
+                
+                await update.message.reply_text(text, parse_mode="Markdown")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error: {str(e)}")
+                del _pending_operations[user_id]
+            return
+        
         if op["state"] == "awaiting_otp":
             try:
                 from auth import verify_totp
@@ -586,6 +717,81 @@ async def _message_handler(update: Any, context: Any):
                             await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
                         
                         logger.critical(f"Shutdown triggered via Telegram by user {user_id}")
+                    
+                    elif operation == "selective_shutdown":
+                        selected_hosts = data.get("selected_hosts", [])
+                        if not selected_hosts:
+                            await update.message.reply_text("❌ No hosts selected")
+                            return
+                        
+                        status_msg = await update.message.reply_text(
+                            f"✅ TOTP verified\n\n"
+                            f"⚡ INITIATING SELECTIVE SHUTDOWN ({len(selected_hosts)} host(s))..."
+                        )
+                        
+                        # Execute selective shutdown
+                        from dms_logic import execute_shutdown_phase
+                        from database import get_all_ssh_hosts, get_all_api_hosts
+                        
+                        results = {"ssh": [], "api": []}
+                        
+                        for host_id in selected_hosts:
+                            parts = host_id.split(":", 2)
+                            if parts[0] == "ssh":
+                                # Find SSH host
+                                ssh_hosts = get_all_ssh_hosts(enabled_only=True)
+                                target = next((h for h in ssh_hosts if h['host'] == parts[1] and h['user'] == parts[2]), None)
+                                if target:
+                                    result = execute_shutdown_phase([target], "ssh", "SSH")
+                                    results["ssh"].extend(result)
+                            elif parts[0] == "api":
+                                # Find API host
+                                api_hosts = get_all_api_hosts(enabled_only=True)
+                                target = next((h for h in api_hosts if h['host'] == parts[1] and h['api_type'] == parts[2]), None)
+                                if target:
+                                    result = execute_shutdown_phase([target], parts[2], parts[2].upper())
+                                    results["api"].extend(result)
+                        
+                        # Build results message
+                        text = f"⚡ **SELECTIVE SHUTDOWN EXECUTED**\n\n"
+                        total_hosts = 0
+                        success_count = 0
+                        
+                        for phase, hosts in results.items():
+                            if hosts:
+                                text += f"**{phase.upper()}:**\n"
+                                for h in hosts:
+                                    total_hosts += 1
+                                    host_name = h.get("host", "unknown")
+                                    status = h.get("status", "unknown")
+                                    details = h.get("details", "")
+                                    
+                                    if status in ["shutdown_initiated", "executed"]:
+                                        icon = "✅"
+                                        success_count += 1
+                                    elif status == "timeout":
+                                        icon = "⏱️"
+                                        success_count += 1
+                                    else:
+                                        icon = "❌"
+                                    
+                                    text += f"{icon} `{host_name}` - {status}\n"
+                                    if details and status not in ["shutdown_initiated", "executed"]:
+                                        text += f"   _{details[:50]}_\n"
+                                text += "\n"
+                        
+                        text += f"**Summary:** {success_count}/{total_hosts} hosts executed\n"
+                        
+                        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="back")]]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        
+                        try:
+                            await status_msg.edit_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+                        except:
+                            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=reply_markup)
+                        
+                        logger.critical(f"Selective shutdown triggered via Telegram by user {user_id}: {len(selected_hosts)} hosts")
                     
                     elif operation == "add_ssh":
                         from database import add_ssh_host, get_all_ssh_hosts
