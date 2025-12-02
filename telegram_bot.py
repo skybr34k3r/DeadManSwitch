@@ -204,6 +204,9 @@ async def _button_callback(update: Any, context: Any):
         return
     
     if data == "back":
+        # Clear any pending operations to avoid stale state
+        if user_id in _pending_operations:
+            del _pending_operations[user_id]
         await _show_main_menu(update, True)
         return
     
@@ -455,6 +458,9 @@ async def _button_callback(update: Any, context: Any):
         return
     
     if data == "remove_ssh":
+        # Clear any pending operations to avoid stale state
+        if user_id in _pending_operations:
+            del _pending_operations[user_id]
         try:
             from database import get_all_ssh_hosts
             hosts = get_all_ssh_hosts(enabled_only=False)
@@ -483,6 +489,9 @@ async def _button_callback(update: Any, context: Any):
         return
     
     if data == "remove_api":
+        # Clear any pending operations to avoid stale state
+        if user_id in _pending_operations:
+            del _pending_operations[user_id]
         try:
             from database import get_all_api_hosts
             hosts = get_all_api_hosts(enabled_only=False)
